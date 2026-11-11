@@ -1,0 +1,74 @@
+# Copy this file to config.toml and fill in the values.
+# config.toml contains secrets, so it is gitignored.
+
+[discord]
+# Discord channel webhook URL (Channel settings -> Integrations -> Webhooks).
+webhook_url = "https://discord.com/api/webhooks/123456789/abcdef..."
+# Name shown on messages posted by the webhook.
+username = "COTD Results"
+
+[nadeo]
+# A Nadeo service account (recommended) or dedicated server account.
+# Create a service account at https://www.trackmania.com/player/service-account
+# Use the service account's login and password, not your Ubisoft credentials.
+login = "your-service-account-login"
+password = "your-service-account-password"
+
+# Nadeo asks for a user agent with project and contact information.
+user_agent = "cotd-results/1.0 (+https://github.com/your-name/cotd-results)"
+
+[oauth]
+# Optional but recommended: an app from https://api.trackmania.com, used only
+# to turn Nadeo account IDs into display names. Leave both empty to show
+# truncated account IDs instead.
+# The app form's redirect URI is unused by the client credentials flow; any
+# valid placeholder (e.g. https://localhost/oauth/callback) is fine.
+client_id = "your-oauth-app-identifier"
+client_secret = "your-oauth-app-secret"
+
+[clubs]
+# One or more Trackmania club IDs. All members of these clubs are tracked.
+ids = [12345, 67890]
+
+[cups]
+# Meet API cup type: cotd, cotw, or grand_race.
+type = "cotd"
+
+# Defaults to the three main crossplay cups per day. To also follow the
+# platform partitions, add "pc", "psn", "xbl", or "luna".
+partitions = ["crossplay"]
+
+# COTD editions: 1 = Cup of the Day (19:00 CET), 2 = Cup of the Night
+# (03:00 CET), 3 = Cup of the Morning (11:00 CET).
+editions = [1, 2, 3]
+
+# Wait this long after the qualifier closes before reading its leaderboard.
+qualifier_grace_seconds = 20
+# Wait this long after the scheduled cup end before marking missing match
+# results as "no result" and posting final output.
+finalize_grace_seconds = 120
+# Discover cups up to this many hours before they start.
+lookahead_hours = 2
+# On startup, recover cups that ended up to this many hours ago.
+catchup_hours = 2
+
+[cups.edition_labels]
+"1" = "Cup of the Day"
+"2" = "Cup of the Night"
+"3" = "Cup of the Morning"
+
+[settings]
+# How often to poll for cup/match updates. Results are edited in place, so a
+# value of 60 means at most one edit per minute per cup.
+poll_interval_seconds = 60
+# Delay between paginated API requests (qualifier leaderboards can be large).
+page_delay_ms = 150
+# State and history are written here.
+data_dir = "data"
+# Completed cups are kept in state.json for this many days (history is kept
+# forever in data/history).
+state_retention_days = 7
+# Club membership is cached for this many hours.
+club_cache_hours = 6
+# Display names are cached for this many days.
+name_cache_days = 7
