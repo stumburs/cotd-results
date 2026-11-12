@@ -81,7 +81,7 @@ type SettingsConfig struct {
 func Default() Config {
 	return Config{
 		Discord: DiscordConfig{
-			Username: "COTD Results",
+			Username: "COTD Results Bot",
 		},
 		Nadeo: NadeoConfig{
 			UserAgent: "cotd-results/1.0 (+https://github.com/your-name/cotd-results)",

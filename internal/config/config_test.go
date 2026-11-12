@@ -41,7 +41,7 @@ ids = [42]
 	if cfg.EditionLabel(2) != "Cup of the Night" {
 		t.Errorf("edition label = %q", cfg.EditionLabel(2))
 	}
-	if cfg.Discord.Username != "COTD Results" {
+	if cfg.Discord.Username != "COTD Results Bot" {
 		t.Errorf("username = %q", cfg.Discord.Username)
 	}
 }

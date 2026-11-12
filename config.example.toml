@@ -1,14 +1,13 @@
-# Copy this file to config.toml and fill in the values.
-# config.toml contains secrets, so it is gitignored.
+# Copy/rename this file to config.toml and fill in the values.
 
 [discord]
 # Discord channel webhook URL (Channel settings -> Integrations -> Webhooks).
 webhook_url = "https://discord.com/api/webhooks/123456789/abcdef..."
 # Name shown on messages posted by the webhook.
-username = "COTD Results"
+username = "COTD Results Bot"
 
 [nadeo]
-# A Nadeo service account (recommended) or dedicated server account.
+# A Nadeo service account. (maybe a dedicated server account works too).
 # Create a service account at https://www.trackmania.com/player/service-account
 # Use the service account's login and password, not your Ubisoft credentials.
 login = "your-service-account-login"
