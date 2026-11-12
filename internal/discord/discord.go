@@ -1,4 +1,4 @@
-package main
+package discord
 
 import (
 	"context"
@@ -10,12 +10,16 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"cotd-results/internal/api"
+	"cotd-results/internal/model"
 )
 
-const discordContentLimit = 1900 // Discord's hard limit is 2000; leave headroom.
+// Discord's red, used for the stripe on the left side of every embed.
+const discordEmbedStripeColor = 0xFF0000
 
 type Discord struct {
-	api        *apiClient
+	api        *api.Client
 	webhookURL string
 	username   string
 	webhookID  string
@@ -39,7 +43,7 @@ func NewDiscord(webhookURL, username string, dryRun bool) (*Discord, error) {
 	}
 
 	return &Discord{
-		api:        newAPIClient("cotd-results/1.0", 250*time.Millisecond),
+		api:        api.NewClient("cotd-results/1.0", 250*time.Millisecond),
 		webhookURL: webhookURL,
 		username:   username,
 		webhookID:  webhookID,
@@ -48,6 +52,10 @@ func NewDiscord(webhookURL, username string, dryRun bool) (*Discord, error) {
 }
 
 func (d *Discord) WebhookID() string { return d.webhookID }
+
+// SetDryRun toggles printing messages instead of sending them, which tests use
+// to keep the real webhook untouched.
+func (d *Discord) SetDryRun(dryRun bool) { d.dryRun = dryRun }
 
 func (d *Discord) webhookWithQuery(extra url.Values) string {
 	u, err := url.Parse(d.webhookURL)
@@ -75,67 +83,85 @@ func (d *Discord) messageURL(messageID string) string {
 }
 
 type discordPayload struct {
+	// Always send content, even when empty: an edit that omits it would leave
+	// the old plain-text content next to the new embed when upgrading from an
+	// older version.
 	Content         string          `json:"content"`
 	Username        string          `json:"username,omitempty"`
 	AllowedMentions *allowedMention `json:"allowed_mentions,omitempty"`
+	Embeds          []discordEmbed  `json:"embeds"`
+}
+
+type discordEmbed struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Color       int    `json:"color"`
 }
 
 type allowedMention struct {
 	Parse []string `json:"parse"`
 }
 
-func (d *Discord) Post(ctx context.Context, content string) (string, error) {
+func embedFor(message model.OutgoingMessage) discordEmbed {
+	return discordEmbed{
+		Title:       message.Title,
+		Description: message.Description,
+		Color:       discordEmbedStripeColor,
+	}
+}
+
+func (d *Discord) Post(ctx context.Context, message model.OutgoingMessage) (string, error) {
 	if d.dryRun {
-		fmt.Printf("\n----- Discord message -----\n%s\n---------------------------\n", content)
+		fmt.Printf("\n----- Discord embed -----\n[%s]\n%s\n-------------------------\n", message.Title, message.Description)
 		return fmt.Sprintf("dry-%d", time.Now().UnixNano()), nil
 	}
 
 	body, _ := json.Marshal(discordPayload{
-		Content:         content,
 		Username:        d.username,
 		AllowedMentions: &allowedMention{Parse: []string{}},
+		Embeds:          []discordEmbed{embedFor(message)},
 	})
 	target := d.webhookWithQuery(url.Values{"wait": {"true"}})
-	status, data, err := d.api.send(ctx, http.MethodPost, target, body, map[string]string{
+	status, data, err := d.api.Send(ctx, http.MethodPost, target, body, map[string]string{
 		"Content-Type": "application/json",
 	})
 	if err != nil {
 		return "", err
 	}
 	if status < 200 || status >= 300 {
-		return "", fmt.Errorf("discord post: HTTP %d: %s", status, truncate(data, 300))
+		return "", fmt.Errorf("discord post: HTTP %d: %s", status, api.Truncate(data, 300))
 	}
 
-	var message struct {
+	var posted struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(data, &message); err != nil {
+	if err := json.Unmarshal(data, &posted); err != nil {
 		return "", fmt.Errorf("decode discord post: %w", err)
 	}
-	if message.ID == "" {
+	if posted.ID == "" {
 		return "", errors.New("discord post: no message ID returned")
 	}
-	return message.ID, nil
+	return posted.ID, nil
 }
 
-func (d *Discord) Edit(ctx context.Context, messageID, content string) error {
+func (d *Discord) Edit(ctx context.Context, messageID string, message model.OutgoingMessage) error {
 	if d.dryRun {
-		fmt.Printf("\n----- Discord edit %s -----\n%s\n---------------------------\n", messageID, content)
+		fmt.Printf("\n----- Discord edit %s -----\n[%s]\n%s\n---------------------------\n", messageID, message.Title, message.Description)
 		return nil
 	}
 
 	body, _ := json.Marshal(discordPayload{
-		Content:         content,
 		AllowedMentions: &allowedMention{Parse: []string{}},
+		Embeds:          []discordEmbed{embedFor(message)},
 	})
-	status, data, err := d.api.send(ctx, http.MethodPatch, d.messageURL(messageID), body, map[string]string{
+	status, data, err := d.api.Send(ctx, http.MethodPatch, d.messageURL(messageID), body, map[string]string{
 		"Content-Type": "application/json",
 	})
 	if err != nil {
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return &discordStatusError{Status: status, Body: truncate(data, 300)}
+		return &discordStatusError{Status: status, Body: api.Truncate(data, 300)}
 	}
 	return nil
 }
@@ -145,7 +171,7 @@ func (d *Discord) Delete(ctx context.Context, messageID string) error {
 		slog.Info("dry run: would delete Discord message", "message_id", messageID)
 		return nil
 	}
-	status, data, err := d.api.send(ctx, http.MethodDelete, d.messageURL(messageID), nil, nil)
+	status, data, err := d.api.Send(ctx, http.MethodDelete, d.messageURL(messageID), nil, nil)
 	if err != nil {
 		return err
 	}
@@ -153,32 +179,32 @@ func (d *Discord) Delete(ctx context.Context, messageID string) error {
 		return nil
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("discord delete: HTTP %d: %s", status, truncate(data, 300))
+		return fmt.Errorf("discord delete: HTTP %d: %s", status, api.Truncate(data, 300))
 	}
 	return nil
 }
 
-// Sync makes the webhook's message group match chunks. Existing messages whose
-// content did not change are left alone, changed chunks are edited in place,
-// new chunks are posted, and surplus messages are deleted.
-func (d *Discord) Sync(ctx context.Context, existing, previous, chunks []string) ([]string, error) {
-	if len(chunks) == 0 {
-		chunks = []string{"(no results)"}
+// Sync makes the webhook's message group match messages. Existing messages
+// whose content did not change are left alone, changed chunks are edited in
+// place, new chunks are posted, and surplus messages are deleted.
+func (d *Discord) Sync(ctx context.Context, existing []string, previous []model.OutgoingMessage, messages []model.OutgoingMessage) ([]string, error) {
+	if len(messages) == 0 {
+		messages = []model.OutgoingMessage{{Description: "(no results)"}}
 	}
 
-	result := make([]string, 0, len(chunks))
-	for i, chunk := range chunks {
+	result := make([]string, 0, len(messages))
+	for i, message := range messages {
 		if i < len(existing) && existing[i] != "" {
-			if i < len(previous) && previous[i] == chunk {
+			if i < len(previous) && previous[i] == message {
 				result = append(result, existing[i])
 				continue
 			}
-			if err := d.Edit(ctx, existing[i], chunk); err != nil {
+			if err := d.Edit(ctx, existing[i], message); err != nil {
 				// If the message was deleted manually, forget it and repost.
 				var apiErr *discordStatusError
 				if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
 					slog.Warn("Discord message disappeared, reposting", "message_id", existing[i])
-					id, postErr := d.Post(ctx, chunk)
+					id, postErr := d.Post(ctx, message)
 					if postErr != nil {
 						result = append(result, existing[i+1:]...)
 						return result, postErr
@@ -194,7 +220,7 @@ func (d *Discord) Sync(ctx context.Context, existing, previous, chunks []string)
 			continue
 		}
 
-		id, err := d.Post(ctx, chunk)
+		id, err := d.Post(ctx, message)
 		if err != nil {
 			if i < len(existing) {
 				result = append(result, existing[i:]...)
@@ -204,8 +230,8 @@ func (d *Discord) Sync(ctx context.Context, existing, previous, chunks []string)
 		result = append(result, id)
 	}
 
-	if len(existing) > len(chunks) {
-		for _, stale := range existing[len(chunks):] {
+	if len(existing) > len(messages) {
+		for _, stale := range existing[len(messages):] {
 			if stale == "" {
 				continue
 			}

@@ -1,61 +1,69 @@
-package main
+package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
 	"time"
+
+	"cotd-results/internal/api"
+	"cotd-results/internal/config"
+	"cotd-results/internal/discord"
+	"cotd-results/internal/model"
+	"cotd-results/internal/nadeo"
+	"cotd-results/internal/render"
+	"cotd-results/internal/store"
 )
 
 type App struct {
-	cfg     *Config
-	nadeo   *Nadeo
-	oauth   *OAuth
-	discord *Discord
-	store   *Store
-	names   *NameCache
+	cfg     *config.Config
+	nadeo   *nadeo.Nadeo
+	oauth   *nadeo.OAuth
+	discord *discord.Discord
+	store   *store.Store
+	names   *store.NameCache
 
 	clubMu      sync.Mutex
 	clubCache   map[string]struct{}
 	clubCacheAt time.Time
 
 	renderMu sync.Mutex
-	rendered map[int64][]string
+	rendered map[int64][]model.OutgoingMessage
 
 	dryRun bool
 }
 
-func NewApp(cfg *Config, dryRun bool) (*App, error) {
-	discord, err := NewDiscord(cfg.Discord.WebhookURL, cfg.Discord.Username, dryRun)
+func NewApp(cfg *config.Config, dryRun bool) (*App, error) {
+	discordClient, err := discord.NewDiscord(cfg.Discord.WebhookURL, cfg.Discord.Username, dryRun)
 	if err != nil {
 		return nil, err
 	}
 
 	dataDir := cfg.Settings.DataDir
-	store, err := LoadStore(filepath.Join(dataDir, "state.json"))
+	stateStore, err := store.LoadStore(filepath.Join(dataDir, "state.json"))
 	if err != nil {
 		return nil, err
 	}
-	names, err := LoadNameCache(filepath.Join(dataDir, "names.json"))
+	nameCache, err := store.LoadNameCache(filepath.Join(dataDir, "names.json"))
 	if err != nil {
 		return nil, err
 	}
-	names.readOnly = dryRun
+	nameCache.SetReadOnly(dryRun)
 
 	return &App{
 		cfg:      cfg,
-		nadeo:    NewNadeo(cfg.Nadeo.Login, cfg.Nadeo.Password, cfg.Nadeo.UserAgent, time.Duration(cfg.Settings.PageDelayMS)*time.Millisecond),
-		oauth:    NewOAuth(cfg.OAuth.ClientID, cfg.OAuth.ClientSecret, cfg.Nadeo.UserAgent),
-		discord:  discord,
-		store:    store,
-		names:    names,
-		rendered: make(map[int64][]string),
+		nadeo:    nadeo.NewNadeo(cfg.Nadeo.Login, cfg.Nadeo.Password, cfg.Nadeo.UserAgent, time.Duration(cfg.Settings.PageDelayMS)*time.Millisecond),
+		oauth:    nadeo.NewOAuth(cfg.OAuth.ClientID, cfg.OAuth.ClientSecret, cfg.Nadeo.UserAgent),
+		discord:  discordClient,
+		store:    stateStore,
+		names:    nameCache,
+		rendered: make(map[int64][]model.OutgoingMessage),
 		dryRun:   dryRun,
 	}, nil
 }
@@ -87,6 +95,131 @@ func (a *App) RunOnce(ctx context.Context) error {
 	return a.saveState()
 }
 
+const TestWebhookDelay = 5 * time.Second
+
+// RunTest sends a qualification-style message, waits a few seconds, then
+// edits the same message with simulated final results and exits. It needs no
+// Nadeo credentials and does not write state or history.
+func (a *App) RunTest(ctx context.Context) error {
+	state := randomTestCupState()
+
+	if err := a.syncMessages(ctx, state); err != nil {
+		return fmt.Errorf("send test qualification message: %w", err)
+	}
+	slog.Info("test qualification message sent",
+		"members", len(state.Members),
+		"waiting", TestWebhookDelay,
+	)
+
+	if err := api.SleepContext(ctx, TestWebhookDelay); err != nil {
+		return err
+	}
+
+	simulateTestFinals(state)
+	if err := a.syncMessages(ctx, state); err != nil {
+		return fmt.Errorf("send test final message: %w", err)
+	}
+	slog.Info("test final message sent", "members", len(state.Members))
+	return nil
+}
+
+func randomTestCupState() *model.CupState {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	now := time.Now()
+	matchSize := 64
+	count := 18 + rng.Intn(15)
+
+	ranks := rng.Perm(600)[:count]
+	zones := []string{
+		"World|Europe|France|Ile-de-France",
+		"World|Europe|Germany|Bavaria",
+		"World|Europe|United Kingdom|England",
+		"World|Europe|Poland|Mazowieckie",
+		"World|Europe|Sweden|Stockholm",
+		"World|Europe|Spain|Madrid",
+		"World|Europe|Italy|Lombardy",
+		"World|Europe|Netherlands|North Holland",
+		"World|North America|United States|California",
+		"World|North America|Canada|Ontario",
+		"World|South America|Brazil|Sao Paulo",
+		"World|Asia|Japan|Tokyo",
+		"World|Asia|South Korea|Seoul",
+		"World|Oceania|Australia|New South Wales",
+	}
+	names := []string{
+		"Alex", "Bea", "Casper", "Dana", "Emil", "Frida", "Gus", "Hana",
+		"Iris", "Jonas", "Kira", "Leo", "Maja", "Nils", "Ola", "Pia",
+		"Quinn", "Rune", "Sara", "Timo", "Uma", "Viktor", "Wera", "Yuki",
+		"Zoe", "Nora", "Finn", "Lina", "Mats", "Elin", "Oscar", "Mila",
+	}
+
+	members := make([]model.MemberState, 0, count)
+	for i, rank := range ranks {
+		qualifierRank := rank + 1
+		members = append(members, model.MemberState{
+			AccountID:      fmt.Sprintf("test-account-%d", i),
+			Name:           names[i%len(names)],
+			QualifierRank:  qualifierRank,
+			QualifierScore: int64(30000 + rng.Intn(20000)),
+			Division:       model.DivisionForRank(qualifierRank, matchSize),
+			Zone:           zones[rng.Intn(len(zones))],
+		})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].Division != members[j].Division {
+			return members[i].Division < members[j].Division
+		}
+		return members[i].QualifierRank < members[j].QualifierRank
+	})
+
+	return &model.CupState{
+		CompetitionID:      -1,
+		Edition:            1,
+		Name:               "Test Cup",
+		Partition:          "crossplay",
+		StartDate:          now.Unix(),
+		EndDate:            now.Add(time.Hour).Unix(),
+		ChallengeStart:     now.Add(-20 * time.Minute).Unix(),
+		ChallengeEnd:       now.Add(-5 * time.Minute).Unix(),
+		MatchSize:          matchSize,
+		QualifierDone:      true,
+		QualifierFetchedAt: now.Unix(),
+		QualifierUnit:      "time",
+		QualifierCardinal:  1234,
+		Members:            members,
+		CreatedAt:          now.Unix(),
+		UpdatedAt:          now.Unix(),
+	}
+}
+
+// simulateTestFinals shuffles each division and assigns unique match ranks, so
+// the rendered order visibly changes from qualifier order to final order.
+func simulateTestFinals(state *model.CupState) {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	byDivision := make(map[int][]int)
+	for i, member := range state.Members {
+		byDivision[member.Division] = append(byDivision[member.Division], i)
+	}
+	for division, indexes := range byDivision {
+		rng.Shuffle(len(indexes), func(i, j int) {
+			indexes[i], indexes[j] = indexes[j], indexes[i]
+		})
+		for rank, index := range indexes {
+			member := &state.Members[index]
+			member.DivisionFinal = true
+			member.MatchRank = rank + 1
+			member.OverallRank = (division-1)*state.MatchSize + rank + 1
+			member.NoResult = false
+		}
+	}
+	state.Completed = true
+	state.UpdatedAt = time.Now().Unix()
+}
+
+// HasOAuth reports whether display-name lookups are configured.
+func (a *App) HasOAuth() bool { return a.oauth != nil }
+
 func (a *App) saveState() error {
 	if a.dryRun {
 		return nil
@@ -111,7 +244,7 @@ func (a *App) Tick(ctx context.Context) error {
 
 		state := a.store.Get(cup.Competition.ID)
 		if state == nil {
-			state = NewCupState(cup)
+			state = store.NewCupState(cup)
 			a.store.Put(state)
 			slog.Info("tracking cup",
 				"competition", cup.Competition.ID,
@@ -147,16 +280,16 @@ func (a *App) Tick(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) cupWanted(cup Cup, now time.Time) bool {
+func (a *App) cupWanted(cup nadeo.Cup, now time.Time) bool {
 	partition := cup.Competition.Partition
 	if partition == "" {
 		// Older/odd responses omit the field; COTD's default is crossplay.
 		partition = "crossplay"
 	}
-	if !a.cfg.wantsPartition(partition) {
+	if !a.cfg.WantsPartition(partition) {
 		return false
 	}
-	if !a.cfg.wantsEdition(cup.Edition) {
+	if !a.cfg.WantsEdition(cup.Edition) {
 		return false
 	}
 
@@ -171,7 +304,7 @@ func (a *App) cupWanted(cup Cup, now time.Time) bool {
 	return true
 }
 
-func (a *App) processCup(ctx context.Context, cup Cup, state *CupState) error {
+func (a *App) processCup(ctx context.Context, cup nadeo.Cup, state *model.CupState) error {
 	now := time.Now()
 	state.UpdatedAt = now.Unix()
 
@@ -249,12 +382,12 @@ func (a *App) processCup(ctx context.Context, cup Cup, state *CupState) error {
 
 // finishCup writes history and the final message once, then marks the cup as
 // finished. If either step fails it is retried on the next poll.
-func (a *App) finishCup(ctx context.Context, state *CupState) error {
+func (a *App) finishCup(ctx context.Context, state *model.CupState) error {
 	if !state.HistorySaved {
 		if a.dryRun {
 			state.HistorySaved = true
 		} else {
-			path, err := SaveHistory(a.cfg.Settings.DataDir, state)
+			path, err := store.SaveHistory(a.cfg.Settings.DataDir, state)
 			if err != nil {
 				return fmt.Errorf("save cup history: %w", err)
 			}
@@ -279,7 +412,7 @@ func (a *App) finishCup(ctx context.Context, state *CupState) error {
 
 // loadRounds finds the qualifier challenge and the round whose matches are the
 // COTD divisions.
-func (a *App) loadRounds(ctx context.Context, cup Cup, state *CupState) error {
+func (a *App) loadRounds(ctx context.Context, cup nadeo.Cup, state *model.CupState) error {
 	rounds, err := a.nadeo.Rounds(ctx, cup.Competition.ID)
 	if err != nil {
 		return fmt.Errorf("load rounds: %w", err)
@@ -288,7 +421,7 @@ func (a *App) loadRounds(ctx context.Context, cup Cup, state *CupState) error {
 		return errors.New("competition has no rounds yet")
 	}
 
-	var chosen *Round
+	var chosen *nadeo.Round
 	for i := range rounds {
 		round := &rounds[i]
 		if round.QualifierChallengeID == 0 {
@@ -307,38 +440,18 @@ func (a *App) loadRounds(ctx context.Context, cup Cup, state *CupState) error {
 
 	state.ChallengeID = chosen.QualifierChallengeID
 	state.QualifierRoundID = chosen.ID
-	state.MatchSize = parseMatchSize(cup.Competition.SpotStructure)
+	state.MatchSize = nadeo.ParseMatchSize(cup.Competition.SpotStructure)
 	return nil
 }
 
-func parseMatchSize(raw string) int {
-	if raw == "" {
-		return 64
-	}
-	var structure struct {
-		Rounds []struct {
-			MatchGeneratorData struct {
-				MatchSize int `json:"matchSize"`
-			} `json:"matchGeneratorData"`
-		} `json:"rounds"`
-	}
-	if err := json.Unmarshal([]byte(raw), &structure); err != nil {
-		return 64
-	}
-	if len(structure.Rounds) > 0 && structure.Rounds[0].MatchGeneratorData.MatchSize > 0 {
-		return structure.Rounds[0].MatchGeneratorData.MatchSize
-	}
-	return 64
-}
-
-func (a *App) loadQualifier(ctx context.Context, state *CupState) error {
+func (a *App) loadQualifier(ctx context.Context, state *model.CupState) error {
 	memberSet, err := a.clubMemberSet(ctx)
 	if err != nil {
 		return fmt.Errorf("load club members: %w", err)
 	}
 
 	var (
-		members  []MemberState
+		members  []model.MemberState
 		seen     = make(map[string]struct{})
 		offset   int
 		cardinal int
@@ -365,11 +478,12 @@ func (a *App) loadQualifier(ctx context.Context, state *CupState) error {
 			}
 			seen[result.Player] = struct{}{}
 
-			members = append(members, MemberState{
+			members = append(members, model.MemberState{
 				AccountID:      result.Player,
 				QualifierRank:  result.Rank,
 				QualifierScore: result.Score,
-				Division:       divisionForRank(result.Rank, state.MatchSize),
+				Division:       model.DivisionForRank(result.Rank, state.MatchSize),
+				Zone:           result.Zone,
 			})
 		}
 
@@ -377,7 +491,7 @@ func (a *App) loadQualifier(ctx context.Context, state *CupState) error {
 		if len(memberSet) == 0 || len(page.Results) == 0 || (cardinal > 0 && offset >= cardinal) {
 			break
 		}
-		if err := sleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
+		if err := api.SleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
 			return err
 		}
 	}
@@ -416,16 +530,6 @@ func (a *App) loadQualifier(ctx context.Context, state *CupState) error {
 	return nil
 }
 
-func divisionForRank(rank, matchSize int) int {
-	if rank <= 0 {
-		return 0
-	}
-	if matchSize <= 0 {
-		matchSize = 64
-	}
-	return (rank-1)/matchSize + 1
-}
-
 func (a *App) clubMemberSet(ctx context.Context) (map[string]struct{}, error) {
 	a.clubMu.Lock()
 	defer a.clubMu.Unlock()
@@ -452,7 +556,7 @@ func (a *App) clubMemberSet(ctx context.Context) (map[string]struct{}, error) {
 	return set, nil
 }
 
-func (a *App) updateFinals(ctx context.Context, state *CupState) error {
+func (a *App) updateFinals(ctx context.Context, state *model.CupState) error {
 	if len(state.Members) == 0 {
 		return nil
 	}
@@ -499,7 +603,7 @@ func (a *App) updateFinals(ctx context.Context, state *CupState) error {
 			continue
 		}
 
-		byPlayer := make(map[string]MatchResult, len(results))
+		byPlayer := make(map[string]nadeo.MatchResult, len(results))
 		for _, result := range results {
 			byPlayer[result.Participant] = result
 		}
@@ -513,6 +617,9 @@ func (a *App) updateFinals(ctx context.Context, state *CupState) error {
 			if result, ok := byPlayer[member.AccountID]; ok {
 				member.MatchRank = result.Rank
 				member.OverallRank = (division-1)*state.MatchSize + result.Rank
+				if member.Zone == "" {
+					member.Zone = result.Zone
+				}
 			} else {
 				member.NoResult = true
 			}
@@ -529,9 +636,9 @@ func (a *App) updateFinals(ctx context.Context, state *CupState) error {
 	return nil
 }
 
-func (a *App) allRoundMatches(ctx context.Context, roundID int64) ([]Match, error) {
+func (a *App) allRoundMatches(ctx context.Context, roundID int64) ([]nadeo.Match, error) {
 	var (
-		all    []Match
+		all    []nadeo.Match
 		offset int
 	)
 	for {
@@ -544,16 +651,16 @@ func (a *App) allRoundMatches(ctx context.Context, roundID int64) ([]Match, erro
 			break
 		}
 		offset += len(page.Matches)
-		if err := sleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
+		if err := api.SleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
 	return all, nil
 }
 
-func (a *App) allMatchResults(ctx context.Context, matchID int64) ([]MatchResult, error) {
+func (a *App) allMatchResults(ctx context.Context, matchID int64) ([]nadeo.MatchResult, error) {
 	var (
-		all    []MatchResult
+		all    []nadeo.MatchResult
 		offset int
 	)
 	for {
@@ -566,14 +673,14 @@ func (a *App) allMatchResults(ctx context.Context, matchID int64) ([]MatchResult
 			break
 		}
 		offset += len(page.Results)
-		if err := sleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
+		if err := api.SleepContext(ctx, time.Duration(a.cfg.Settings.PageDelayMS)*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
 	return all, nil
 }
 
-func (a *App) allFinal(state *CupState) bool {
+func (a *App) allFinal(state *model.CupState) bool {
 	if !state.QualifierDone {
 		return false
 	}
@@ -585,7 +692,7 @@ func (a *App) allFinal(state *CupState) bool {
 	return true
 }
 
-func (a *App) finalizeMissing(state *CupState) {
+func (a *App) finalizeMissing(state *model.CupState) {
 	for i := range state.Members {
 		if !state.Members[i].DivisionFinal {
 			state.Members[i].DivisionFinal = true
@@ -594,28 +701,28 @@ func (a *App) finalizeMissing(state *CupState) {
 	}
 }
 
-func (a *App) syncMessages(ctx context.Context, state *CupState) error {
-	chunks := buildMessageChunks(state, a.cfg)
+func (a *App) syncMessages(ctx context.Context, state *model.CupState) error {
+	messages := render.BuildMessages(state, a.cfg)
 
 	a.renderMu.Lock()
 	previous := a.rendered[state.CompetitionID]
-	if slices.Equal(previous, chunks) && len(state.Messages) > 0 {
+	if slices.Equal(previous, messages) && len(state.Messages) > 0 {
 		a.renderMu.Unlock()
 		return nil
 	}
 	a.renderMu.Unlock()
 
-	messages, syncErr := a.discord.Sync(ctx, state.Messages, previous, chunks)
+	messageIDs, syncErr := a.discord.Sync(ctx, state.Messages, previous, messages)
 	// Persist partial progress too, so a retry does not post duplicates for
 	// chunks that already succeeded.
-	state.Messages = messages
+	state.Messages = messageIDs
 	state.WebhookID = a.discord.WebhookID()
 	if syncErr != nil {
 		return fmt.Errorf("sync Discord messages: %w", syncErr)
 	}
 
 	a.renderMu.Lock()
-	a.rendered[state.CompetitionID] = chunks
+	a.rendered[state.CompetitionID] = messages
 	a.renderMu.Unlock()
 	return nil
 }

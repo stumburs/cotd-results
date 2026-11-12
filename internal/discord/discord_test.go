@@ -1,6 +1,10 @@
-package main
+package discord
 
-import "testing"
+import (
+	"testing"
+
+	"cotd-results/internal/model"
+)
 
 func TestMessageURLPreservesThreadQuery(t *testing.T) {
 	d := &Discord{
@@ -24,11 +28,13 @@ func TestMessageURLWithWaitQuery(t *testing.T) {
 	}
 }
 
-func TestSafeURLRedactsWebhookToken(t *testing.T) {
-	got := safeURL("https://discord.com/api/webhooks/123/secret-token?thread_id=9")
-	want := "https://discord.com/api/webhooks/123/REDACTED"
-	if got != want {
-		t.Errorf("safeURL = %q, want %q", got, want)
+func TestEmbedForUsesRedStripe(t *testing.T) {
+	embed := embedFor(model.OutgoingMessage{Title: "title", Description: "body"})
+	if embed.Title != "title" || embed.Description != "body" {
+		t.Errorf("embed = %+v", embed)
+	}
+	if embed.Color != discordEmbedStripeColor {
+		t.Errorf("embed color = %#x, want %#x", embed.Color, discordEmbedStripeColor)
 	}
 }
 

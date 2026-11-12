@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -11,6 +11,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"cotd-results/internal/config"
+	"cotd-results/internal/model"
+	"cotd-results/internal/nadeo"
+	"cotd-results/internal/render"
 )
 
 type mockNadeo struct {
@@ -38,10 +43,10 @@ func (m *mockNadeo) RoundTrip(req *http.Request) (*http.Response, error) {
 	case path == "/api/cups-of-the-day":
 		start := m.now.Add(-5 * time.Minute).Unix()
 		end := m.now.Add(10 * time.Minute).Unix()
-		cup := Cup{
+		cup := nadeo.Cup{
 			ID:      1,
 			Edition: 1,
-			Competition: Competition{
+			Competition: nadeo.Competition{
 				ID:            46610,
 				Name:          "COTD test",
 				Partition:     "crossplay",
@@ -49,7 +54,7 @@ func (m *mockNadeo) RoundTrip(req *http.Request) (*http.Response, error) {
 				StartDate:     start,
 				EndDate:       end,
 			},
-			Challenge: Challenge{
+			Challenge: nadeo.Challenge{
 				ID:        23951,
 				Name:      "COTD test - Challenge",
 				StartDate: start - 900,
@@ -58,7 +63,7 @@ func (m *mockNadeo) RoundTrip(req *http.Request) (*http.Response, error) {
 			StartDate: start,
 			EndDate:   end,
 		}
-		return jsonResponse(200, marshal(CupsResponse{COTDs: []Cup{cup}})), nil
+		return jsonResponse(200, marshal(nadeo.CupsResponse{COTDs: []nadeo.Cup{cup}})), nil
 
 	case path == "/api/competitions/46610/rounds":
 		return jsonResponse(200, `[{"id":9078,"position":0,"name":"Round 1","qualifierChallengeId":23951}]`), nil
@@ -72,9 +77,9 @@ func (m *mockNadeo) RoundTrip(req *http.Request) (*http.Response, error) {
 			"cardinal": 3,
 			"scoreUnit": "time",
 			"results": [
-				{"player":"acc-a","rank":1,"score":38106},
-				{"player":"acc-b","rank":65,"score":40000},
-				{"player":"acc-c","rank":130,"score":41000}
+				{"player":"acc-a","rank":1,"score":38106,"zone":"World|Europe|France|Ile-de-France"},
+				{"player":"acc-b","rank":65,"score":40000,"zone":"World|Europe|Germany|Bavaria"},
+				{"player":"acc-c","rank":130,"score":41000,"zone":"World|Europe|Sweden|Stockholm"}
 			]
 		}`), nil
 
@@ -123,10 +128,10 @@ func marshal(value any) string {
 	return string(raw)
 }
 
-func newTestApp(t *testing.T, transport http.RoundTripper) (*App, *Config) {
+func newTestApp(t *testing.T, transport http.RoundTripper) (*App, *config.Config) {
 	t.Helper()
 
-	cfg := defaultConfig()
+	cfg := config.Default()
 	cfg.Discord.WebhookURL = "https://discord.com/api/webhooks/123/token"
 	cfg.Nadeo.Login = "login"
 	cfg.Nadeo.Password = "password"
@@ -141,8 +146,8 @@ func newTestApp(t *testing.T, transport http.RoundTripper) (*App, *Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.discord.dryRun = true
-	app.nadeo.api.http.Transport = transport
+	app.discord.SetDryRun(true)
+	app.nadeo.SetTransport(transport)
 	return app, &cfg
 }
 
@@ -225,11 +230,63 @@ func TestCupLifecycle(t *testing.T) {
 		t.Fatalf("got %d history files, want 1", len(entries))
 	}
 
-	text := strings.Join(buildMessageChunks(state, cfg), "\n")
-	if !strings.Contains(text, "**Division 3** — final") {
-		t.Errorf("final message missing division 3:\n%s", text)
+	text := strings.Join(messageDescriptions(render.BuildMessages(state, cfg)), "\n")
+	for _, want := range []string{
+		"**Division 1**",
+		"**Division 2**",
+		"**Division 3**",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("final message missing %q:\n%s", want, text)
+		}
 	}
-	if !strings.Contains(text, "overall **#130**") {
-		t.Errorf("final message missing overall rank 130:\n%s", text)
+	if !strings.Contains(text, "**#10**") {
+		t.Errorf("final message missing relative Division 2 rank:\n%s", text)
+	}
+	if strings.Contains(text, "**#130**") {
+		t.Errorf("final message should show relative, not absolute, rank:\n%s", text)
+	}
+	if strings.Contains(text, "\"Q#") {
+		t.Errorf("final message should not show qualifier ranks:\n%s", text)
+	}
+	if !strings.Contains(text, "🇫🇷") || !strings.Contains(text, "🇩🇪") || !strings.Contains(text, "🇸🇪") {
+		t.Errorf("final message missing nation flags:\n%s", text)
+	}
+	title := render.BuildMessages(state, cfg)[0].Title
+	if !strings.HasSuffix(title, "COTD #1 has finished") {
+		t.Errorf("final title = %q, want it to end with %q", title, "COTD #1 has finished")
+	}
+}
+
+func messageDescriptions(messages []model.OutgoingMessage) []string {
+	descriptions := make([]string, len(messages))
+	for i, message := range messages {
+		descriptions[i] = message.Description
+	}
+	return descriptions
+}
+
+func TestRandomTestCupStateFinishes(t *testing.T) {
+	state := randomTestCupState()
+	if len(state.Members) == 0 {
+		t.Fatal("test cup has no members")
+	}
+	simulateTestFinals(state)
+	if !state.Completed {
+		t.Error("test cup should be completed after simulation")
+	}
+
+	seen := make(map[int]bool)
+	for _, member := range state.Members {
+		if !member.DivisionFinal {
+			t.Errorf("%s is not final", member.Name)
+		}
+		if member.OverallRank <= 0 {
+			t.Errorf("%s has no overall rank", member.Name)
+		}
+		if seen[member.OverallRank] {
+			t.Errorf("duplicate overall rank %d", member.OverallRank)
+		}
+		seen[member.OverallRank] = true
 	}
 }

@@ -1,20 +1,18 @@
-package main
+package nadeo
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"cotd-results/internal/api"
 )
 
 const (
@@ -26,169 +24,12 @@ const (
 
 var errNoContent = errors.New("no content")
 
-// apiClient handles throttling, the custom user agent, and retries for
-// rate limits/server errors. Every Nadeo and OAuth request goes through it.
-type apiClient struct {
-	http        *http.Client
-	userAgent   string
-	minInterval time.Duration
-
-	mu   sync.Mutex
-	last time.Time
-}
-
-func newAPIClient(userAgent string, minInterval time.Duration) *apiClient {
-	return &apiClient{
-		http: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		userAgent:   userAgent,
-		minInterval: minInterval,
-	}
-}
-
-func (c *apiClient) throttle(ctx context.Context) error {
-	c.mu.Lock()
-	now := time.Now()
-	wait := c.minInterval - now.Sub(c.last)
-	if wait < 0 {
-		wait = 0
-		c.last = now
-	} else {
-		c.last = now.Add(wait)
-	}
-	c.mu.Unlock()
-
-	if wait == 0 {
-		return nil
-	}
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
-func (c *apiClient) send(ctx context.Context, method, rawURL string, body []byte, headers map[string]string) (int, []byte, error) {
-	for attempt := 0; ; attempt++ {
-		if err := c.throttle(ctx); err != nil {
-			return 0, nil, err
-		}
-
-		var reader io.Reader
-		if body != nil {
-			reader = bytes.NewReader(body)
-		}
-		req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
-		if err != nil {
-			return 0, nil, err
-		}
-		req.Header.Set("User-Agent", c.userAgent)
-		req.Header.Set("Accept", "application/json")
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			if attempt < 2 {
-				if err := sleepContext(ctx, time.Duration(attempt+1)*time.Second); err != nil {
-					return 0, nil, err
-				}
-				continue
-			}
-			return 0, nil, err
-		}
-
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-		resp.Body.Close()
-		if readErr != nil {
-			return 0, nil, readErr
-		}
-
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			delay := retryAfter(resp.Header.Get("Retry-After"), data)
-			if attempt >= 4 {
-				return resp.StatusCode, data, fmt.Errorf("rate limited by %s (retry after %s)", rawURL, delay)
-			}
-			slog.Warn("rate limited, backing off", "url", safeURL(rawURL), "delay", delay)
-			if err := sleepContext(ctx, delay); err != nil {
-				return 0, nil, err
-			}
-			continue
-
-		case resp.StatusCode >= 500:
-			if attempt < 4 {
-				delay := time.Duration(1<<attempt) * time.Second
-				slog.Warn("server error, retrying", "url", safeURL(rawURL), "status", resp.StatusCode, "delay", delay)
-				if err := sleepContext(ctx, delay); err != nil {
-					return 0, nil, err
-				}
-				continue
-			}
-		}
-
-		return resp.StatusCode, data, nil
-	}
-}
-
-// safeURL strips Discord webhook tokens before a URL is written to logs.
-func safeURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	if strings.Contains(u.Path, "/api/webhooks/") {
-		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-		if len(parts) > 0 {
-			parts[len(parts)-1] = "REDACTED"
-			u.Path = "/" + strings.Join(parts, "/")
-		}
-		u.RawQuery = ""
-	}
-	return u.String()
-}
-
-func retryAfter(header string, body []byte) time.Duration {
-	if header != "" {
-		if seconds, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && seconds > 0 {
-			return time.Duration(seconds * float64(time.Second))
-		}
-	}
-	// Discord uses a JSON body; Nadeo normally only uses the header.
-	var payload struct {
-		RetryAfter float64 `json:"retry_after"`
-	}
-	if json.Unmarshal(body, &payload) == nil && payload.RetryAfter > 0 {
-		return time.Duration(payload.RetryAfter * float64(time.Second))
-	}
-	return 2 * time.Second
-}
-
-func sleepContext(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Nadeo game API (Meet + Live + Core auth)
 // ---------------------------------------------------------------------------
 
 type Nadeo struct {
-	api *apiClient
+	api *api.Client
 
 	login    string
 	password string
@@ -200,10 +41,16 @@ type Nadeo struct {
 
 func NewNadeo(login, password, userAgent string, pageDelay time.Duration) *Nadeo {
 	return &Nadeo{
-		api:      newAPIClient(userAgent, pageDelay),
+		api:      api.NewClient(userAgent, pageDelay),
 		login:    login,
 		password: password,
 	}
+}
+
+// SetTransport replaces the HTTP transport, which lets tests intercept
+// requests without a live network.
+func (n *Nadeo) SetTransport(transport http.RoundTripper) {
+	n.api.SetTransport(transport)
 }
 
 func (n *Nadeo) tokenLocked(ctx context.Context) (string, error) {
@@ -213,7 +60,7 @@ func (n *Nadeo) tokenLocked(ctx context.Context) (string, error) {
 
 	payload, _ := json.Marshal(map[string]string{"audience": "NadeoLiveServices"})
 	basic := base64.StdEncoding.EncodeToString([]byte(n.login + ":" + n.password))
-	status, body, err := n.api.send(ctx, http.MethodPost, coreBase+"/v2/authentication/token/basic", payload, map[string]string{
+	status, body, err := n.api.Send(ctx, http.MethodPost, coreBase+"/v2/authentication/token/basic", payload, map[string]string{
 		"Content-Type":  "application/json",
 		"Authorization": "Basic " + basic,
 	})
@@ -221,7 +68,7 @@ func (n *Nadeo) tokenLocked(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("authenticate: %w", err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("authenticate: HTTP %d: %s", status, truncate(body, 300))
+		return "", fmt.Errorf("authenticate: HTTP %d: %s", status, api.Truncate(body, 300))
 	}
 
 	var tr struct {
@@ -260,7 +107,7 @@ func (n *Nadeo) getJSON(ctx context.Context, rawURL string, out any) error {
 			return err
 		}
 
-		status, body, err := n.api.send(ctx, http.MethodGet, rawURL, nil, map[string]string{
+		status, body, err := n.api.Send(ctx, http.MethodGet, rawURL, nil, map[string]string{
 			"Authorization": "nadeo_v1 t=" + token,
 		})
 		if err != nil {
@@ -275,7 +122,7 @@ func (n *Nadeo) getJSON(ctx context.Context, rawURL string, out any) error {
 			return errNoContent
 		}
 		if status != http.StatusOK {
-			return fmt.Errorf("GET %s: HTTP %d: %s", rawURL, status, truncate(body, 300))
+			return fmt.Errorf("GET %s: HTTP %d: %s", rawURL, status, api.Truncate(body, 300))
 		}
 		if err := json.Unmarshal(body, out); err != nil {
 			return fmt.Errorf("decode %s: %w", rawURL, err)
@@ -301,14 +148,6 @@ func jwtExpiry(token string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(claims.Exp, 0)
-}
-
-func truncate(b []byte, max int) string {
-	s := strings.TrimSpace(string(b))
-	if len(s) > max {
-		return s[:max] + "..."
-	}
-	return s
 }
 
 // ---- Response types -------------------------------------------------------
@@ -409,6 +248,28 @@ type ClubMember struct {
 	Role      string `json:"role"`
 }
 
+// ParseMatchSize extracts the division size from a competition's
+// spotStructure JSON. COTD uses 64; the API default is used when absent.
+func ParseMatchSize(raw string) int {
+	if raw == "" {
+		return 64
+	}
+	var structure struct {
+		Rounds []struct {
+			MatchGeneratorData struct {
+				MatchSize int `json:"matchSize"`
+			} `json:"matchGeneratorData"`
+		} `json:"rounds"`
+	}
+	if err := json.Unmarshal([]byte(raw), &structure); err != nil {
+		return 64
+	}
+	if len(structure.Rounds) > 0 && structure.Rounds[0].MatchGeneratorData.MatchSize > 0 {
+		return structure.Rounds[0].MatchGeneratorData.MatchSize
+	}
+	return 64
+}
+
 // ---- Endpoints ------------------------------------------------------------
 
 func (n *Nadeo) CupsOfTheDay(ctx context.Context, cupType string) ([]Cup, error) {
@@ -477,7 +338,7 @@ func (n *Nadeo) ClubMembers(ctx context.Context, clubID int64) ([]string, error)
 		if len(page.ClubMemberList) < 250 || (page.ItemCount > 0 && offset >= page.ItemCount) {
 			break
 		}
-		if err := sleepContext(ctx, 150*time.Millisecond); err != nil {
+		if err := api.SleepContext(ctx, 150*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
@@ -489,7 +350,7 @@ func (n *Nadeo) ClubMembers(ctx context.Context, clubID int64) ([]string, error)
 // ---------------------------------------------------------------------------
 
 type OAuth struct {
-	api          *apiClient
+	api          *api.Client
 	clientID     string
 	clientSecret string
 
@@ -503,7 +364,7 @@ func NewOAuth(clientID, clientSecret, userAgent string) *OAuth {
 		return nil
 	}
 	return &OAuth{
-		api:          newAPIClient(userAgent, 150*time.Millisecond),
+		api:          api.NewClient(userAgent, 150*time.Millisecond),
 		clientID:     clientID,
 		clientSecret: clientSecret,
 	}
@@ -519,14 +380,14 @@ func (o *OAuth) tokenLocked(ctx context.Context) (string, error) {
 		"client_id":     {o.clientID},
 		"client_secret": {o.clientSecret},
 	}
-	status, body, err := o.api.send(ctx, http.MethodPost, oauthBase+"/api/access_token", []byte(form.Encode()), map[string]string{
+	status, body, err := o.api.Send(ctx, http.MethodPost, oauthBase+"/api/access_token", []byte(form.Encode()), map[string]string{
 		"Content-Type": "application/x-www-form-urlencoded",
 	})
 	if err != nil {
 		return "", err
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("oauth token: HTTP %d: %s", status, truncate(body, 300))
+		return "", fmt.Errorf("oauth token: HTTP %d: %s", status, api.Truncate(body, 300))
 	}
 
 	var tr struct {
@@ -573,7 +434,7 @@ func (o *OAuth) DisplayNames(ctx context.Context, ids []string) (map[string]stri
 			if err != nil {
 				return names, err
 			}
-			status, body, err := o.api.send(ctx, http.MethodGet, rawURL, nil, map[string]string{
+			status, body, err := o.api.Send(ctx, http.MethodGet, rawURL, nil, map[string]string{
 				"Authorization": "Bearer " + token,
 			})
 			if err != nil {
@@ -587,7 +448,7 @@ func (o *OAuth) DisplayNames(ctx context.Context, ids []string) (map[string]stri
 				continue
 			}
 			if status != http.StatusOK {
-				return names, fmt.Errorf("display names: HTTP %d: %s", status, truncate(body, 300))
+				return names, fmt.Errorf("display names: HTTP %d: %s", status, api.Truncate(body, 300))
 			}
 			if err := json.Unmarshal(body, &page); err != nil {
 				return names, err
@@ -599,7 +460,7 @@ func (o *OAuth) DisplayNames(ctx context.Context, ids []string) (map[string]stri
 			names[id] = name
 		}
 		if end < len(ids) {
-			if err := sleepContext(ctx, 150*time.Millisecond); err != nil {
+			if err := api.SleepContext(ctx, 150*time.Millisecond); err != nil {
 				return names, err
 			}
 		}

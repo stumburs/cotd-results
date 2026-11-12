@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"context"
@@ -10,13 +10,16 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"cotd-results/internal/model"
+	"cotd-results/internal/nadeo"
 )
 
 const stateVersion = 1
 
 type StoreData struct {
-	Version int                  `json:"version"`
-	Cups    map[string]*CupState `json:"cups"`
+	Version int                        `json:"version"`
+	Cups    map[string]*model.CupState `json:"cups"`
 }
 
 type Store struct {
@@ -28,7 +31,7 @@ type Store struct {
 func LoadStore(path string) (*Store, error) {
 	store := &Store{
 		path: path,
-		data: StoreData{Version: stateVersion, Cups: make(map[string]*CupState)},
+		data: StoreData{Version: stateVersion, Cups: make(map[string]*model.CupState)},
 	}
 
 	raw, err := os.ReadFile(path)
@@ -45,7 +48,7 @@ func LoadStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("parse state %s: %w", path, err)
 	}
 	if store.data.Cups == nil {
-		store.data.Cups = make(map[string]*CupState)
+		store.data.Cups = make(map[string]*model.CupState)
 	}
 	return store, nil
 }
@@ -54,13 +57,13 @@ func cupKey(competitionID int64) string {
 	return fmt.Sprintf("%d", competitionID)
 }
 
-func (s *Store) Get(competitionID int64) *CupState {
+func (s *Store) Get(competitionID int64) *model.CupState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.data.Cups[cupKey(competitionID)]
 }
 
-func (s *Store) Put(state *CupState) {
+func (s *Store) Put(state *model.CupState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.Cups[cupKey(state.CompetitionID)] = state
@@ -95,58 +98,7 @@ func (s *Store) Prune(now time.Time, retentionDays int) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Per-cup state
-// ---------------------------------------------------------------------------
-
-type CupState struct {
-	CompetitionID int64  `json:"competitionId"`
-	CupID         int64  `json:"cupId"`
-	Edition       int    `json:"edition"`
-	Name          string `json:"name"`
-	Partition     string `json:"partition"`
-
-	StartDate        int64 `json:"startDate"`
-	EndDate          int64 `json:"endDate"`
-	ChallengeStart   int64 `json:"challengeStart"`
-	ChallengeEnd     int64 `json:"challengeEnd"`
-	ChallengeID      int64 `json:"challengeId"`
-	QualifierRoundID int64 `json:"qualifierRoundId"`
-	MatchSize        int   `json:"matchSize"`
-
-	QualifierDone      bool   `json:"qualifierDone"`
-	QualifierFetchedAt int64  `json:"qualifierFetchedAt"`
-	QualifierUnit      string `json:"qualifierUnit"`
-	QualifierCardinal  int    `json:"qualifierCardinal"`
-	NoQualifier        bool   `json:"noQualifier,omitempty"`
-
-	Members []MemberState `json:"members"`
-
-	Messages  []string `json:"messages"`
-	WebhookID string   `json:"webhookId"`
-
-	Completed    bool  `json:"completed"`
-	HistorySaved bool  `json:"historySaved"`
-	Finished     bool  `json:"finished"`
-	CreatedAt    int64 `json:"createdAt"`
-	UpdatedAt    int64 `json:"updatedAt"`
-}
-
-type MemberState struct {
-	AccountID      string `json:"accountId"`
-	Name           string `json:"name"`
-	QualifierRank  int    `json:"qualifierRank"`
-	QualifierScore int64  `json:"qualifierScore"`
-	Division       int    `json:"division"`
-
-	MatchID       int64 `json:"matchId,omitempty"`
-	MatchRank     int   `json:"matchRank,omitempty"`
-	OverallRank   int   `json:"overallRank,omitempty"`
-	DivisionFinal bool  `json:"divisionFinal"`
-	NoResult      bool  `json:"noResult,omitempty"`
-}
-
-func NewCupState(cup Cup) *CupState {
+func NewCupState(cup nadeo.Cup) *model.CupState {
 	now := time.Now().Unix()
 	name := cup.Competition.Name
 	if name == "" {
@@ -156,7 +108,7 @@ func NewCupState(cup Cup) *CupState {
 	if partition == "" {
 		partition = "crossplay"
 	}
-	return &CupState{
+	return &model.CupState{
 		CompetitionID:  cup.Competition.ID,
 		CupID:          cup.ID,
 		Edition:        cup.Edition,
@@ -189,6 +141,13 @@ type NameEntry struct {
 	FetchedAt int64  `json:"fetchedAt"`
 }
 
+// SetReadOnly prevents the cache from being written, which dry runs use.
+func (n *NameCache) SetReadOnly(readOnly bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.readOnly = readOnly
+}
+
 func LoadNameCache(path string) (*NameCache, error) {
 	cache := &NameCache{
 		path:    path,
@@ -212,7 +171,7 @@ func LoadNameCache(path string) (*NameCache, error) {
 
 // Resolve returns names for ids, using the cache and only asking the OAuth API
 // for missing/expired entries. Failures are logged and cached names are used.
-func (n *NameCache) Resolve(ctx context.Context, oauth *OAuth, ids []string, maxAgeDays int) map[string]string {
+func (n *NameCache) Resolve(ctx context.Context, oauth *nadeo.OAuth, ids []string, maxAgeDays int) map[string]string {
 	names := make(map[string]string, len(ids))
 	if len(ids) == 0 {
 		return names
@@ -285,20 +244,20 @@ func (n *NameCache) Save() error {
 // ---------------------------------------------------------------------------
 
 type HistoryCup struct {
-	CompetitionID int64         `json:"competitionId"`
-	CupID         int64         `json:"cupId"`
-	Edition       int           `json:"edition"`
-	Name          string        `json:"name"`
-	Partition     string        `json:"partition"`
-	StartDate     string        `json:"startDate"`
-	EndDate       string        `json:"endDate"`
-	QualifierID   int64         `json:"qualifierChallengeId"`
-	QualifierSize int           `json:"qualifierCardinal"`
-	SavedAt       string        `json:"savedAt"`
-	Members       []MemberState `json:"members"`
+	CompetitionID int64               `json:"competitionId"`
+	CupID         int64               `json:"cupId"`
+	Edition       int                 `json:"edition"`
+	Name          string              `json:"name"`
+	Partition     string              `json:"partition"`
+	StartDate     string              `json:"startDate"`
+	EndDate       string              `json:"endDate"`
+	QualifierID   int64               `json:"qualifierChallengeId"`
+	QualifierSize int                 `json:"qualifierCardinal"`
+	SavedAt       string              `json:"savedAt"`
+	Members       []model.MemberState `json:"members"`
 }
 
-func SaveHistory(dataDir string, state *CupState) (string, error) {
+func SaveHistory(dataDir string, state *model.CupState) (string, error) {
 	dir := filepath.Join(dataDir, "history")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err

@@ -2,7 +2,8 @@
 
 Posts Trackmania Cup of the Day results for members of one or more clubs to a
 Discord webhook. No bot account is needed: it uses a channel webhook and edits
-its own messages in place.
+its own messages in place. Messages use Discord embeds with a red stripe, and
+each player gets their nation flag when the API provides a zone.
 
 Each cup gets its own message. The message is posted as soon as the qualifier
 closes (with every tracked player's division), then edited roughly once a
@@ -33,7 +34,13 @@ changes and Nadeo schedule changes are handled automatically.
    within the match).
 6. Edits the same Discord message(s) when something changes. Once every tracked
    division is finished, it writes a JSON history file and stops polling that
-   cup.
+   cup. The embed title becomes e.g. `2026-10-01 COTD #1 has finished`.
+
+Before any division finishes, players are grouped by division and ordered by
+qualifier rank. Once a division finishes its section switches to final order:
+players are ordered by their finishing position within that division, and the
+qualifier position is no longer shown. Divisions that are still racing keep the
+qualifier-style view until they finish.
 
 The unit of "division" is the match position: match position `0` is Division 1,
 `1` is Division 2, and so on. Qualifier division assignment is rank-based,
@@ -93,7 +100,7 @@ options, including labels, partitions, polling and catch-up windows.
 ### 5. Build and run
 
 ```sh
-go build -o cotd-results.exe .
+go build -o cotd-results.exe ./cmd/cotd-results
 ./cotd-results.exe -config config.toml
 ```
 
@@ -101,7 +108,16 @@ Useful flags:
 
 - `-once` — run one poll cycle and exit (handy for testing credentials).
 - `-dry-run` — print Discord messages to stdout and do not write state/history.
+- `-test-webhook` — send a fake qualification message, wait 5 seconds, edit it
+  with simulated final results, then exit. Only `discord.webhook_url` is
+  required for this mode, so it works before the Nadeo credentials are set up.
 - `-debug` — verbose logging.
+
+To preview the embed style without touching the real data:
+
+```sh
+./cotd-results.exe -config config.toml -test-webhook
+```
 
 Do not put credentials in source control; `config.toml` and `data/` are
 gitignored.
@@ -160,6 +176,11 @@ Then every request sends `Authorization: nadeo_v1 t=<accessToken>`.
 | Club members (250/page) | `GET live-services.trackmania.nadeo.live/api/token/club/{clubId}/member?length=250&offset=N` |
 | Display names (50 IDs) | `GET api.trackmania.com/api/display-names?accountId[]=...` |
 
+Leaderboard entries include a `zone` such as
+`World|Europe|France|Ile-de-France`. The third segment is the country; the tool
+maps it to an ISO alpha-2 code and renders the corresponding flag emoji. If the
+zone is missing or the country is unknown, the flag is simply omitted.
+
 Notes:
 
 - `/api/cup-of-the-day/current` only returns the crossplay cup that is
@@ -211,4 +232,19 @@ Notes:
 ```sh
 go test ./...
 go vet ./...
+```
+
+### Project layout
+
+```
+cmd/cotd-results/   command-line entry point
+internal/api/       shared throttled HTTP client
+internal/app/       polling loop and cup lifecycle
+internal/config/    config.toml loading and validation
+internal/discord/   webhook message sync
+internal/geo/       zone -> country flag emoji
+internal/model/     state and message types shared by packages
+internal/nadeo/     Nadeo and OAuth API clients
+internal/render/    Discord embed rendering
+internal/store/     state, name cache, and history persistence
 ```

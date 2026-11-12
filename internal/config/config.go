@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"errors"
@@ -78,7 +78,7 @@ type SettingsConfig struct {
 	NameCacheDays       int    `toml:"name_cache_days"`
 }
 
-func defaultConfig() Config {
+func Default() Config {
 	return Config{
 		Discord: DiscordConfig{
 			Username: "COTD Results",
@@ -122,12 +122,22 @@ func cloneLabels(src map[string]string) map[string]string {
 }
 
 func LoadConfig(path string) (*Config, error) {
+	return loadConfig(path, false)
+}
+
+// LoadConfigForTest only requires the Discord webhook. The test-message mode
+// does not touch the Nadeo API, so credentials and club IDs are optional.
+func LoadConfigForTest(path string) (*Config, error) {
+	return loadConfig(path, true)
+}
+
+func loadConfig(path string, testOnly bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	cfg := defaultConfig()
+	cfg := Default()
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -141,7 +151,11 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	if err := cfg.validate(); err != nil {
+	if testOnly {
+		if err := cfg.validateTest(); err != nil {
+			return nil, err
+		}
+	} else if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
@@ -157,13 +171,28 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func (c *Config) validateTest() error {
+	if problem := c.webhookProblem(); problem != "" {
+		return errors.New("invalid config:\n  - " + problem)
+	}
+	return nil
+}
+
+func (c *Config) webhookProblem() string {
+	if strings.TrimSpace(c.Discord.WebhookURL) == "" {
+		return "discord.webhook_url is required"
+	}
+	if u, err := url.Parse(c.Discord.WebhookURL); err != nil || u.Scheme != "https" || !strings.Contains(u.Path, "/api/webhooks/") {
+		return "discord.webhook_url must be a Discord webhook URL"
+	}
+	return ""
+}
+
 func (c *Config) validate() error {
 	var problems []string
 
-	if strings.TrimSpace(c.Discord.WebhookURL) == "" {
-		problems = append(problems, "discord.webhook_url is required")
-	} else if u, err := url.Parse(c.Discord.WebhookURL); err != nil || u.Scheme != "https" || !strings.Contains(u.Path, "/api/webhooks/") {
-		problems = append(problems, "discord.webhook_url must be a Discord webhook URL")
+	if problem := c.webhookProblem(); problem != "" {
+		problems = append(problems, problem)
 	}
 
 	if strings.TrimSpace(c.Nadeo.Login) == "" || c.Nadeo.Password == "" {
@@ -223,14 +252,14 @@ func (c *Config) validate() error {
 	return nil
 }
 
-func (c *Config) editionLabel(edition int) string {
+func (c *Config) EditionLabel(edition int) string {
 	if label := c.Cups.EditionLabels[fmt.Sprintf("%d", edition)]; label != "" {
 		return label
 	}
 	return fmt.Sprintf("Cup #%d", edition)
 }
 
-func (c *Config) wantsPartition(partition string) bool {
+func (c *Config) WantsPartition(partition string) bool {
 	if len(c.Cups.Partitions) == 0 {
 		return true
 	}
@@ -242,7 +271,7 @@ func (c *Config) wantsPartition(partition string) bool {
 	return false
 }
 
-func (c *Config) wantsEdition(edition int) bool {
+func (c *Config) WantsEdition(edition int) bool {
 	if len(c.Cups.Editions) == 0 {
 		return true
 	}
