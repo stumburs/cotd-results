@@ -106,3 +106,11 @@ reposts the current cup's messages to the new webhook.
 go test ./...
 go vet ./...
 ```
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## AI disclaimer
+
+This project uses AI in its source code. [See my rant](https://stumburs.github.io/ai) for more information.
