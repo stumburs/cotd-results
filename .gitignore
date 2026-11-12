@@ -1,5 +1,5 @@
 config.toml
 data/
-cotd-results
-cotd-results.exe
+/cotd-results
+/cotd-results.exe
 *.test
