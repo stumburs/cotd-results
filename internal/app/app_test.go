@@ -77,9 +77,9 @@ func (m *mockNadeo) RoundTrip(req *http.Request) (*http.Response, error) {
 			"cardinal": 3,
 			"scoreUnit": "time",
 			"results": [
-				{"player":"acc-a","rank":1,"score":38106,"zone":"World|Europe|France|Ile-de-France"},
-				{"player":"acc-b","rank":65,"score":40000,"zone":"World|Europe|Germany|Bavaria"},
-				{"player":"acc-c","rank":130,"score":41000,"zone":"World|Europe|Sweden|Stockholm"}
+				{"player":"acc-a","rank":1,"score":38106},
+				{"player":"acc-b","rank":65,"score":40000},
+				{"player":"acc-c","rank":130,"score":41000}
 			]
 		}`), nil
 
@@ -248,9 +248,6 @@ func TestCupLifecycle(t *testing.T) {
 	}
 	if strings.Contains(text, "\"Q#") {
 		t.Errorf("final message should not show qualifier ranks:\n%s", text)
-	}
-	if !strings.Contains(text, "🇫🇷") || !strings.Contains(text, "🇩🇪") || !strings.Contains(text, "🇸🇪") {
-		t.Errorf("final message missing nation flags:\n%s", text)
 	}
 	title := render.BuildMessages(state, cfg)[0].Title
 	if !strings.HasSuffix(title, "COTD #1 has finished") {

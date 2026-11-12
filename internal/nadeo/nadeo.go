@@ -207,7 +207,6 @@ type ChallengeResult struct {
 	Player string `json:"player"`
 	Score  int64  `json:"score"`
 	Rank   int    `json:"rank"`
-	Zone   string `json:"zone"`
 }
 
 type MatchesPage struct {
@@ -233,7 +232,6 @@ type MatchResult struct {
 	Participant string `json:"participant"`
 	Rank        int    `json:"rank"`
 	Score       int64  `json:"score"`
-	Zone        string `json:"zone"`
 }
 
 type ClubMembersPage struct {

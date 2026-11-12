@@ -130,22 +130,6 @@ func randomTestCupState() *model.CupState {
 	count := 18 + rng.Intn(15)
 
 	ranks := rng.Perm(600)[:count]
-	zones := []string{
-		"World|Europe|France|Ile-de-France",
-		"World|Europe|Germany|Bavaria",
-		"World|Europe|United Kingdom|England",
-		"World|Europe|Poland|Mazowieckie",
-		"World|Europe|Sweden|Stockholm",
-		"World|Europe|Spain|Madrid",
-		"World|Europe|Italy|Lombardy",
-		"World|Europe|Netherlands|North Holland",
-		"World|North America|United States|California",
-		"World|North America|Canada|Ontario",
-		"World|South America|Brazil|Sao Paulo",
-		"World|Asia|Japan|Tokyo",
-		"World|Asia|South Korea|Seoul",
-		"World|Oceania|Australia|New South Wales",
-	}
 	names := []string{
 		"Alex", "Bea", "Casper", "Dana", "Emil", "Frida", "Gus", "Hana",
 		"Iris", "Jonas", "Kira", "Leo", "Maja", "Nils", "Ola", "Pia",
@@ -162,7 +146,6 @@ func randomTestCupState() *model.CupState {
 			QualifierRank:  qualifierRank,
 			QualifierScore: int64(30000 + rng.Intn(20000)),
 			Division:       model.DivisionForRank(qualifierRank, matchSize),
-			Zone:           zones[rng.Intn(len(zones))],
 		})
 	}
 	sort.Slice(members, func(i, j int) bool {
@@ -483,7 +466,6 @@ func (a *App) loadQualifier(ctx context.Context, state *model.CupState) error {
 				QualifierRank:  result.Rank,
 				QualifierScore: result.Score,
 				Division:       model.DivisionForRank(result.Rank, state.MatchSize),
-				Zone:           result.Zone,
 			})
 		}
 
@@ -617,9 +599,6 @@ func (a *App) updateFinals(ctx context.Context, state *model.CupState) error {
 			if result, ok := byPlayer[member.AccountID]; ok {
 				member.MatchRank = result.Rank
 				member.OverallRank = (division-1)*state.MatchSize + result.Rank
-				if member.Zone == "" {
-					member.Zone = result.Zone
-				}
 			} else {
 				member.NoResult = true
 			}

@@ -2,8 +2,7 @@
 
 Posts Trackmania Cup of the Day results for members of one or more clubs to a
 Discord webhook. No bot account is needed: it uses a channel webhook and edits
-its own messages in place. Messages use Discord embeds with a red stripe, and
-each player gets their nation flag when the API provides a zone.
+its own messages in place. Messages use Discord embeds with a red stripe.
 
 Each cup gets its own message. The message is posted as soon as the qualifier
 closes (with every tracked player's division), then edited roughly once a
@@ -176,11 +175,6 @@ Then every request sends `Authorization: nadeo_v1 t=<accessToken>`.
 | Club members (250/page) | `GET live-services.trackmania.nadeo.live/api/token/club/{clubId}/member?length=250&offset=N` |
 | Display names (50 IDs) | `GET api.trackmania.com/api/display-names?accountId[]=...` |
 
-Leaderboard entries include a `zone` such as
-`World|Europe|France|Ile-de-France`. The third segment is the country; the tool
-maps it to an ISO alpha-2 code and renders the corresponding flag emoji. If the
-zone is missing or the country is unknown, the flag is simply omitted.
-
 Notes:
 
 - `/api/cup-of-the-day/current` only returns the crossplay cup that is
@@ -242,7 +236,6 @@ internal/api/       shared throttled HTTP client
 internal/app/       polling loop and cup lifecycle
 internal/config/    config.toml loading and validation
 internal/discord/   webhook message sync
-internal/geo/       zone -> country flag emoji
 internal/model/     state and message types shared by packages
 internal/nadeo/     Nadeo and OAuth API clients
 internal/render/    Discord embed rendering

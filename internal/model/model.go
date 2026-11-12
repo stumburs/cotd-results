@@ -42,7 +42,6 @@ type MemberState struct {
 	QualifierRank  int    `json:"qualifierRank"`
 	QualifierScore int64  `json:"qualifierScore"`
 	Division       int    `json:"division"`
-	Zone           string `json:"zone,omitempty"`
 
 	MatchID       int64 `json:"matchId,omitempty"`
 	MatchRank     int   `json:"matchRank,omitempty"`

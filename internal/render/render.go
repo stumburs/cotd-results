@@ -7,12 +7,11 @@ import (
 	"time"
 
 	"cotd-results/internal/config"
-	"cotd-results/internal/geo"
 	"cotd-results/internal/model"
 )
 
 // Discord embed descriptions allow 4096 characters; stay conservative because
-// Go counts bytes and names/flags can be multi-byte.
+// Go counts bytes and player names can be multi-byte.
 const embedDescriptionLimit = 3800
 
 type messageSection struct {
@@ -222,11 +221,7 @@ func finalMemberLine(member model.MemberState) string {
 }
 
 func memberDisplayName(member model.MemberState) string {
-	name := sanitizeName(member.Name)
-	if flag := geo.CountryFlag(member.Zone); flag != "" {
-		return flag + " " + name
-	}
-	return name
+	return sanitizeName(member.Name)
 }
 
 func chunkSections(header string, sections []messageSection, limit int) []string {

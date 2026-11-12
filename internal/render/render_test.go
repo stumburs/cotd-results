@@ -69,7 +69,7 @@ func TestChunkSectionsRespectsLimitAndKeepsLines(t *testing.T) {
 	}
 }
 
-func TestBuildMessagesUsesFinalOrderAndFlags(t *testing.T) {
+func TestBuildMessagesUsesFinalOrder(t *testing.T) {
 	cfg := config.Default()
 	state := &model.CupState{
 		Name:              "COTD 2026-11-11 #1",
@@ -79,9 +79,9 @@ func TestBuildMessagesUsesFinalOrderAndFlags(t *testing.T) {
 		QualifierCardinal: 1000,
 		QualifierUnit:     "time",
 		Members: []model.MemberState{
-			{AccountID: "a", Name: "Alice", QualifierRank: 12, QualifierScore: 38106, Division: 1, DivisionFinal: true, MatchRank: 7, OverallRank: 7, Zone: "World|Europe|France|Ile-de-France"},
-			{AccountID: "b", Name: "Bob", QualifierRank: 77, QualifierScore: 40000, Division: 2, Zone: "World|Europe|Germany|Bavaria"},
-			{AccountID: "c", Name: "Charlie", QualifierRank: 20, QualifierScore: 39000, Division: 1, DivisionFinal: true, MatchRank: 2, OverallRank: 2, Zone: "World|Europe|Sweden|Stockholm"},
+			{AccountID: "a", Name: "Alice", QualifierRank: 12, QualifierScore: 38106, Division: 1, DivisionFinal: true, MatchRank: 7, OverallRank: 7},
+			{AccountID: "b", Name: "Bob", QualifierRank: 77, QualifierScore: 40000, Division: 2},
+			{AccountID: "c", Name: "Charlie", QualifierRank: 20, QualifierScore: 39000, Division: 1, DivisionFinal: true, MatchRank: 2, OverallRank: 2},
 		},
 	}
 
@@ -95,9 +95,9 @@ func TestBuildMessagesUsesFinalOrderAndFlags(t *testing.T) {
 		"3 club members qualified out of 1,000",
 		"**Division 1**",
 		"**Division 2**",
-		"**#2** 🇸🇪 Charlie",
-		"**#7** 🇫🇷 Alice",
-		"**Q#77** 🇩🇪 Bob — 0:40.000",
+		"**#2** Charlie",
+		"**#7** Alice",
+		"**Q#77** Bob — 0:40.000",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("rendered message is missing %q\n%s", want, text)
@@ -123,8 +123,8 @@ func TestBuildMessagesQualifierOrdering(t *testing.T) {
 		QualifierCardinal: 500,
 		QualifierUnit:     "time",
 		Members: []model.MemberState{
-			{Name: "Division 2 racer", QualifierRank: 70, QualifierScore: 40000, Division: 2, Zone: "World|Europe|Germany|Bavaria"},
-			{Name: "Division 1 racer", QualifierRank: 5, QualifierScore: 38106, Division: 1, Zone: "World|Europe|France|Ile-de-France"},
+			{Name: "Division 2 racer", QualifierRank: 70, QualifierScore: 40000, Division: 2},
+			{Name: "Division 1 racer", QualifierRank: 5, QualifierScore: 38106, Division: 1},
 		},
 	}
 
@@ -132,7 +132,7 @@ func TestBuildMessagesQualifierOrdering(t *testing.T) {
 	if !strings.Contains(text, "**Division 1**") || !strings.Contains(text, "**Division 2**") {
 		t.Errorf("missing division sections:\n%s", text)
 	}
-	if !strings.Contains(text, "**Q#5** 🇫🇷 Division 1 racer — 0:38.106") {
+	if !strings.Contains(text, "**Q#5** Division 1 racer — 0:38.106") {
 		t.Errorf("missing qualifier line:\n%s", text)
 	}
 	if strings.Index(text, "Division 1 racer") > strings.Index(text, "Division 2 racer") {
