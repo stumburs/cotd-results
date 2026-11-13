@@ -50,9 +50,9 @@ func cupTitle(state *model.CupState, cfg *config.Config) string {
 	case state.Completed:
 		title += " has finished"
 	case state.QualifierDone:
-		title += " — live"
+		title += " - live"
 	default:
-		title += " — qualifiers"
+		title += " - qualifiers"
 	}
 	return title
 }
@@ -76,27 +76,22 @@ func buildHeader(state *model.CupState, cfg *config.Config) string {
 	var summary string
 	switch {
 	case state.NoQualifier:
-		summary = "No qualifier was found for this cup."
+		summary = "No qualifier was found for this cup"
 	case !state.QualifierDone:
-		summary = "Waiting for the qualifier to finish…"
+		summary = "Waiting for the qualifier to finish..."
 	case len(state.Members) == 0:
+		summary = "No club members qualified"
 		if state.QualifierCardinal > 0 {
-			summary = fmt.Sprintf("No club members qualified (out of %s players).", formatInt(state.QualifierCardinal))
-		} else {
-			summary = "No club members qualified."
+			summary += fmt.Sprintf(" - (%s total players)", formatInt(state.QualifierCardinal))
 		}
-	case state.QualifierCardinal > 0:
-		summary = fmt.Sprintf("%d club member%s qualified out of %s",
-			len(state.Members), plural(len(state.Members)), formatInt(state.QualifierCardinal))
 	default:
-		summary = fmt.Sprintf("%d club member%s qualified",
-			len(state.Members), plural(len(state.Members)))
-	}
-	if state.Completed && len(state.Members) > 0 {
-		summary += " · final results"
+		summary = fmt.Sprintf("%d club member%s", len(state.Members), plural(len(state.Members)))
+		if state.QualifierCardinal > 0 {
+			summary += fmt.Sprintf(" (%s total players)", formatInt(state.QualifierCardinal))
+		}
 	}
 
-	return fmt.Sprintf("**%s** — %s", label, summary)
+	return fmt.Sprintf("**%s** - %s", label, summary)
 }
 
 func buildSections(state *model.CupState) []messageSection {
@@ -130,15 +125,11 @@ func qualifierSections(state *model.CupState) []messageSection {
 
 		lines := make([]string, 0, len(members))
 		for _, member := range members {
-			lines = append(lines, fmt.Sprintf("**Q#%d** %s — %s",
-				member.QualifierRank,
-				memberDisplayName(member),
-				formatQualifierScore(member.QualifierScore, state.QualifierUnit),
-			))
+			lines = append(lines, qualifierMemberLine(member))
 		}
 
 		sections = append(sections, messageSection{
-			Title: fmt.Sprintf("**Division %d**", division),
+			Title: fmt.Sprintf("- **Division %d**", division),
 			Lines: lines,
 		})
 	}
@@ -146,9 +137,9 @@ func qualifierSections(state *model.CupState) []messageSection {
 }
 
 // finalSections is used as soon as any division has finished. Results stay
-// grouped by division, but finished divisions are ordered by overall finishing
-// position and show the qualifier rank as a quoted suffix. Divisions that are
-// still racing keep the qualifier-style view.
+// grouped by division, but finished divisions are ordered by finishing
+// position and show the relative match rank. Divisions that are still racing
+// keep the qualifier-style view.
 func finalSections(state *model.CupState) []messageSection {
 	grouped := make(map[int][]model.MemberState)
 	divisionFinal := make(map[int]bool)
@@ -187,7 +178,7 @@ func finalSections(state *model.CupState) []messageSection {
 				lines = append(lines, finalMemberLine(member))
 			}
 			sections = append(sections, messageSection{
-				Title: fmt.Sprintf("**Division %d**", division),
+				Title: fmt.Sprintf("- **Division %d**", division),
 				Lines: lines,
 			})
 			continue
@@ -198,26 +189,26 @@ func finalSections(state *model.CupState) []messageSection {
 		})
 		lines := make([]string, 0, len(members))
 		for _, member := range members {
-			lines = append(lines, fmt.Sprintf("**Q#%d** %s — %s",
-				member.QualifierRank,
-				memberDisplayName(member),
-				formatQualifierScore(member.QualifierScore, state.QualifierUnit),
-			))
+			lines = append(lines, qualifierMemberLine(member))
 		}
 		sections = append(sections, messageSection{
-			Title: fmt.Sprintf("**Division %d**", division),
+			Title: fmt.Sprintf("- **Division %d**", division),
 			Lines: lines,
 		})
 	}
 	return sections
 }
 
+func qualifierMemberLine(member model.MemberState) string {
+	return fmt.Sprintf("**%d** %s", member.QualifierRank, memberDisplayName(member))
+}
+
 func finalMemberLine(member model.MemberState) string {
 	name := memberDisplayName(member)
 	if member.NoResult || member.MatchRank <= 0 {
-		return fmt.Sprintf("%s — no result", name)
+		return fmt.Sprintf("*(DNF)* %s", name)
 	}
-	return fmt.Sprintf("**#%d** %s", member.MatchRank, name)
+	return fmt.Sprintf("**%d** %s", member.MatchRank, name)
 }
 
 func memberDisplayName(member model.MemberState) string {
@@ -262,9 +253,6 @@ func chunkSections(header string, sections []messageSection, limit int) []string
 	}
 
 	for _, section := range sections {
-		if curLen > 0 {
-			addLine("")
-		}
 		if curLen+len(section.Title)+1 > limit {
 			flush()
 		}
@@ -288,43 +276,35 @@ func chunkSections(header string, sections []messageSection, limit int) []string
 	return chunks
 }
 
-func formatQualifierScore(score int64, unit string) string {
-	switch unit {
-	case "time":
-		return formatTime(score)
-	case "point", "points":
-		return fmt.Sprintf("%d pts", score)
-	default:
-		if score == 0 {
-			return "0"
-		}
-		return fmt.Sprintf("%d", score)
-	}
-}
-
-func formatTime(ms int64) string {
-	if ms < 0 {
-		return "?"
-	}
-	hours := ms / 3_600_000
-	minutes := (ms % 3_600_000) / 60_000
-	seconds := (ms % 60_000) / 1_000
-	millis := ms % 1_000
-	if hours > 0 {
-		return fmt.Sprintf("%d:%02d:%02d.%03d", hours, minutes, seconds, millis)
-	}
-	return fmt.Sprintf("%d:%02d.%03d", minutes, seconds, millis)
-}
-
 func sanitizeName(name string) string {
 	name = strings.ReplaceAll(name, "\n", " ")
 	name = strings.ReplaceAll(name, "\r", " ")
-	name = strings.ReplaceAll(name, "`", "'")
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "unknown"
 	}
-	return name
+	return escapeMarkdown(name)
+}
+
+// escapeMarkdown prevents usernames from triggering Discord's markdown
+// formatting. Backslashes are escaped first so the added escapes are not
+// escaped a second time.
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`*`, `\*`,
+	`_`, `\_`,
+	`~`, `\~`,
+	"`", "\\`",
+	`|`, `\|`,
+	`>`, `\>`,
+	`#`, `\#`,
+	`-`, `\-`,
+	`[`, `\[`,
+	`]`, `\]`,
+)
+
+func escapeMarkdown(name string) string {
+	return markdownEscaper.Replace(name)
 }
 
 func formatInt(value int) string {

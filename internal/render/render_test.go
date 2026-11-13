@@ -10,20 +10,6 @@ import (
 	"cotd-results/internal/model"
 )
 
-func TestFormatTime(t *testing.T) {
-	tests := map[int64]string{
-		0:       "0:00.000",
-		38106:   "0:38.106",
-		60000:   "1:00.000",
-		3600000: "1:00:00.000",
-	}
-	for input, want := range tests {
-		if got := formatTime(input); got != want {
-			t.Errorf("formatTime(%d) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestFormatInt(t *testing.T) {
 	tests := map[int]string{
 		0:       "0",
@@ -39,13 +25,13 @@ func TestFormatInt(t *testing.T) {
 }
 
 func TestChunkSectionsRespectsLimitAndKeepsLines(t *testing.T) {
-	header := "**COTD test** — Cup of the Day\n100 club members qualified"
-	lines := make([]string, 0, 200)
-	for i := 1; i <= 200; i++ {
-		lines = append(lines, fmt.Sprintf("**Q#%d** Player-%d — 0:39.%03d", i, i, i))
+	header := "**COTD test** - Cup of the Day\n100 club members qualified"
+	lines := make([]string, 0, 600)
+	for i := 1; i <= 600; i++ {
+		lines = append(lines, fmt.Sprintf("**%d** Player-%d", i, i))
 	}
 	chunks := chunkSections(header, []messageSection{{
-		Title: "**Division 1**",
+		Title: "- **Division 1**",
 		Lines: lines,
 	}}, embedDescriptionLimit)
 
@@ -58,8 +44,8 @@ func TestChunkSectionsRespectsLimitAndKeepsLines(t *testing.T) {
 		}
 	}
 	joined := strings.Join(chunks, "\n")
-	for i := 1; i <= 200; i++ {
-		needle := fmt.Sprintf("**Q#%d**", i)
+	for i := 1; i <= 600; i++ {
+		needle := fmt.Sprintf("**%d** Player-%d", i, i)
 		if strings.Count(joined, needle) != 1 {
 			t.Errorf("expected exactly one %q, got %d", needle, strings.Count(joined, needle))
 		}
@@ -92,24 +78,24 @@ func TestBuildMessagesUsesFinalOrder(t *testing.T) {
 	text := messages[0].Description
 	for _, want := range []string{
 		"Cup of the Day",
-		"3 club members qualified out of 1,000",
-		"**Division 1**",
-		"**Division 2**",
-		"**#2** Charlie",
-		"**#7** Alice",
-		"**Q#77** Bob — 0:40.000",
+		"3 club members (1,000 total players)",
+		"- **Division 1**",
+		"- **Division 2**",
+		"**2** Charlie",
+		"**7** Alice",
+		"**77** Bob",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("rendered message is missing %q\n%s", want, text)
 		}
 	}
-	if strings.Index(text, "**#2**") > strings.Index(text, "**#7**") {
+	if strings.Index(text, "**2**") > strings.Index(text, "**7**") {
 		t.Errorf("final results are not ordered by position:\n%s", text)
 	}
 	if strings.Contains(text, "0:38.106") {
 		t.Errorf("final results should not repeat qualifier times:\n%s", text)
 	}
-	if strings.Contains(text, "\"Q#20\"") || strings.Contains(text, "\"Q#12\"") {
+	if strings.Contains(text, "Q#") {
 		t.Errorf("final results should not repeat qualifier ranks:\n%s", text)
 	}
 }
@@ -129,14 +115,56 @@ func TestBuildMessagesQualifierOrdering(t *testing.T) {
 	}
 
 	text := BuildMessages(state, &cfg)[0].Description
-	if !strings.Contains(text, "**Division 1**") || !strings.Contains(text, "**Division 2**") {
+	if !strings.Contains(text, "- **Division 1**") || !strings.Contains(text, "- **Division 2**") {
 		t.Errorf("missing division sections:\n%s", text)
 	}
-	if !strings.Contains(text, "**Q#5** Division 1 racer — 0:38.106") {
+	if !strings.Contains(text, "**5** Division 1 racer") {
 		t.Errorf("missing qualifier line:\n%s", text)
 	}
 	if strings.Index(text, "Division 1 racer") > strings.Index(text, "Division 2 racer") {
 		t.Errorf("qualifier view should be ordered by division:\n%s", text)
+	}
+}
+
+func TestBuildMessagesEscapesUsernames(t *testing.T) {
+	cfg := config.Default()
+	state := &model.CupState{
+		Edition:           1,
+		QualifierDone:     true,
+		QualifierCardinal: 100,
+		Members: []model.MemberState{
+			{Name: "TeaAm_TM", QualifierRank: 10, Division: 3},
+			{Name: "Jake.-", QualifierRank: 17, Division: 3},
+			{Name: "star*name", QualifierRank: 18, Division: 3},
+		},
+	}
+
+	text := BuildMessages(state, &cfg)[0].Description
+	for _, want := range []string{
+		`**10** TeaAm\_TM`,
+		`**17** Jake.\-`,
+		`**18** star\*name`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rendered message is missing %q\n%s", want, text)
+		}
+	}
+}
+
+func TestBuildMessagesShowsDNF(t *testing.T) {
+	cfg := config.Default()
+	state := &model.CupState{
+		Edition:           1,
+		QualifierDone:     true,
+		QualifierCardinal: 100,
+		Members: []model.MemberState{
+			{Name: "Evo.Palli", QualifierRank: 9, Division: 17, DivisionFinal: true, NoResult: true},
+		},
+	}
+
+	text := BuildMessages(state, &cfg)[0].Description
+	if !strings.Contains(text, "*(DNF)* Evo.Palli") {
+		t.Errorf("rendered message is missing DNF marker:\n%s", text)
 	}
 }
 
@@ -164,7 +192,7 @@ func TestBuildMessagesNoMembers(t *testing.T) {
 	if !strings.Contains(text, "Cup of the Night") {
 		t.Errorf("missing edition label: %s", text)
 	}
-	if !strings.Contains(text, "No club members qualified (out of 500 players)") {
+	if !strings.Contains(text, "No club members qualified - (500 total players)") {
 		t.Errorf("missing empty message: %s", text)
 	}
 }

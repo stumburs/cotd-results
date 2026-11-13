@@ -240,13 +240,13 @@ func TestCupLifecycle(t *testing.T) {
 			t.Errorf("final message missing %q:\n%s", want, text)
 		}
 	}
-	if !strings.Contains(text, "**#10**") {
+	if !strings.Contains(text, "**10**") {
 		t.Errorf("final message missing relative Division 2 rank:\n%s", text)
 	}
-	if strings.Contains(text, "**#130**") {
+	if strings.Contains(text, "**130**") {
 		t.Errorf("final message should show relative, not absolute, rank:\n%s", text)
 	}
-	if strings.Contains(text, "\"Q#") {
+	if strings.Contains(text, "Q#") {
 		t.Errorf("final message should not show qualifier ranks:\n%s", text)
 	}
 	title := render.BuildMessages(state, cfg)[0].Title
