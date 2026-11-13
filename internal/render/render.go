@@ -192,7 +192,7 @@ func finalSections(state *model.CupState) []messageSection {
 			lines = append(lines, qualifierMemberLine(member))
 		}
 		sections = append(sections, messageSection{
-			Title: fmt.Sprintf("- **Division %d**", division),
+			Title: fmt.Sprintf("- **Division %d** *(live)*", division),
 			Lines: lines,
 		})
 	}

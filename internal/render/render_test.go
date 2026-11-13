@@ -80,7 +80,7 @@ func TestBuildMessagesUsesFinalOrder(t *testing.T) {
 		"Cup of the Day",
 		"3 club members (1,000 total players)",
 		"- **Division 1**",
-		"- **Division 2**",
+		"- **Division 2** *(live)*",
 		"**2** Charlie",
 		"**7** Alice",
 		"**77** Bob",
@@ -120,6 +120,9 @@ func TestBuildMessagesQualifierOrdering(t *testing.T) {
 	}
 	if !strings.Contains(text, "**5** Division 1 racer") {
 		t.Errorf("missing qualifier line:\n%s", text)
+	}
+	if strings.Contains(text, "*(live)*") {
+		t.Errorf("qualifier view should not mark divisions as live:\n%s", text)
 	}
 	if strings.Index(text, "Division 1 racer") > strings.Index(text, "Division 2 racer") {
 		t.Errorf("qualifier view should be ordered by division:\n%s", text)
